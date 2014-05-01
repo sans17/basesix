@@ -4,58 +4,23 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
-import java.util.List;
 import org.apache.commons.exec.ExecuteStreamHandler;
-import org.apache.commons.io.IOUtils;
+import org.apache.commons.exec.PumpStreamHandler;
 
+/**
+ * Blocking alternative to {@link PumpStreamHandler}.
+ * Implementation is reading constantly from inputs.
+ *
+ */
 public class PumpStreamHandlerAlt implements ExecuteStreamHandler
 {
-    private static class StreamPumper implements Runnable
-    {
-        private final InputStream input;
-        private final OutputStream output;
-        private final boolean toCloseInput;
-        private final boolean toCloseOutput;
-
-        private StreamPumper(final InputStream pInput, final OutputStream pOutput, final boolean pCloseInputOnStop, final boolean pCloseOutputOnStop)
-        {
-            input = pInput;
-            output = pOutput;
-
-            toCloseInput = pCloseInputOnStop;
-            toCloseOutput = pCloseOutputOnStop;
-        }
-
-        @Override
-        public void run()
-        {
-            if(input != null) try
-            {
-                for(int lRead = -1; (lRead = input.read()) >= 0;)
-                    if(output != null)
-                    {
-                        output.write(lRead);
-                        output.flush();
-                    }
-            }
-            catch(IOException e)
-            {}
-        }
-
-        protected void stop()
-        {
-            if(toCloseInput) IOUtils.closeQuietly(input);
-            if(toCloseOutput) IOUtils.closeQuietly(output);
-        }
-    }
-
     private final InputStream input;
     private final OutputStream output;
     private final OutputStream error;
 
-    private StreamPumper processInputStreamReader;
-    private StreamPumper processOutputStreamReader;
-    private StreamPumper processErrorStreamReader;
+    private Thread inputPump;
+    private Thread outputPump;
+    private Thread errorPump;
 
     public PumpStreamHandlerAlt(final InputStream pInput, final OutputStream pOutput, final OutputStream pError)
     {
@@ -64,44 +29,56 @@ public class PumpStreamHandlerAlt implements ExecuteStreamHandler
         error = pError;
     }
 
-    private List<StreamPumper> getStreamPumpers()
+    private Thread createPump(final InputStream pInput, final OutputStream pOutput)
     {
-        return Arrays.asList(processInputStreamReader, processOutputStreamReader, processErrorStreamReader);
+        Thread ret = new Thread()
+        {
+            @Override
+            public void run()
+            {
+                if(input != null) try
+                {
+                    for(int lRead = -1; (lRead = input.read()) >= 0;)
+                        if(output != null)
+                        {
+                            output.write(lRead);
+                            output.flush();
+                        }
+                }
+                catch(IOException e)
+                {}
+            }
+        };
+        ret.setDaemon(true);
+        return ret;
     }
 
     @Override
     public void setProcessErrorStream(final InputStream pProcessErrorStream)
     {
-        processErrorStreamReader = new StreamPumper(pProcessErrorStream, error, true, false);
+        errorPump = createPump(pProcessErrorStream, error);
     }
 
     @Override
     public void setProcessInputStream(final OutputStream pProcessInputStream)
     {
-        processInputStreamReader = new StreamPumper(input, pProcessInputStream, false, true);
+        inputPump = createPump(input, pProcessInputStream);
     }
 
     @Override
     public void setProcessOutputStream(final InputStream pProcessOutputStream)
     {
-        processOutputStreamReader = new StreamPumper(pProcessOutputStream, output, true, false);
+        outputPump = createPump(pProcessOutputStream, output);
     }
 
     @Override
     public void start()
     {
-        for(StreamPumper lStreamPumper : getStreamPumpers())
-        {
-            Thread lThread = new Thread(lStreamPumper);
-            lThread.setDaemon(true);
+        for(Thread lThread : Arrays.asList(errorPump, outputPump, inputPump))
             lThread.start();
-        }
     }
 
     @Override
     public void stop()
-    {
-        for(StreamPumper lStoppable : getStreamPumpers())
-            lStoppable.stop();
-    }
+    {}
 }
